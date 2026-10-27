@@ -16,7 +16,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - run: npm ci
+      - run: npm install
+      - name: Match package versions to the Expo SDK
+        run: npx expo install --fix
       - run: npx expo prebuild --platform android
       - name: Use your signing key
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/debug.keystore

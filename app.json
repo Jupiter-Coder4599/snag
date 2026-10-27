@@ -8,20 +8,25 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#1B2025",
     "android": {
-      "package": "com.jupiter.snag"
+      "package": "com.jupiter.snag",
+      "allowBackup": false
     },
     "plugins": [
       [
         "expo-share-intent",
         {
-          "androidIntentFilters": ["text/*"],
+          "androidIntentFilters": [
+            "text/*"
+          ],
           "disableIOS": true
         }
       ],
       [
         "expo-media-library",
         {
-          "granularPermissions": ["video"],
+          "granularPermissions": [
+            "video"
+          ],
           "savePhotosPermission": "Allow Snag to save videos to your gallery."
         }
       ]
