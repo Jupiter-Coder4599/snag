@@ -1,0 +1,21 @@
+{
+  "name": "snag",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "doctor": "expo-doctor"
+  },
+  "dependencies": {
+    "expo": "~57.0.26",
+    "expo-file-system": "~57.0.0",
+    "expo-linking": "~57.0.0",
+    "expo-media-library": "~57.0.0",
+    "expo-share-intent": "^8.0.0",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-webview": "13.16.1"
+  }
+}
