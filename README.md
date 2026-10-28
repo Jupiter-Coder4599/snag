@@ -1,11 +1,12 @@
 # Snag
 
-Share an Instagram reel or post to Snag and it saves the video to your gallery.
-Snag only talks to Instagram, using your own login. No outside servers.
+Share an Instagram or X post to Snag and its photos and videos save to your gallery.
+Snag only talks to the site the post is from: Instagram (with your own login) or
+X (its public embed service, no login). No outside servers.
 
 - PIN lock: downloads unlock for 45 minutes at a time.
-- Saved videos table: account, source server and time for every video.
-- Videos from any server that isn't Instagram's are blocked and logged.
+- Saved media table: account, site, photo or video, and time for every file.
+- Files from any server that isn't the site's own are blocked and logged.
 
 Android app, Expo SDK 57. Builds on GitHub Actions (`.github/workflows/android.yml`),
 signed with the key in the `ANDROID_KEYSTORE_BASE64` repo secret.

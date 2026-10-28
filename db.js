@@ -7,6 +7,7 @@ db.execSync(`
   PRAGMA journal_mode = WAL;
   CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
+    site TEXT DEFAULT 'instagram',
     code TEXT NOT NULL,
     url TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -19,6 +20,8 @@ db.execSync(`
   CREATE TABLE IF NOT EXISTS videos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT,
+    site TEXT DEFAULT 'instagram',
+    kind TEXT DEFAULT 'video',
     saved_at INTEGER NOT NULL,
     account TEXT,
     post_url TEXT NOT NULL,
@@ -31,11 +34,21 @@ db.execSync(`
   );
 `);
 
+// Older installs: add columns that newer versions use.
+function addColumn(table, column, definition) {
+  const cols = db.getAllSync(`PRAGMA table_info(${table})`).map((c) => c.name);
+  if (!cols.includes(column)) db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+addColumn('jobs', 'site', "TEXT DEFAULT 'instagram'");
+addColumn('videos', 'site', "TEXT DEFAULT 'instagram'");
+addColumn('videos', 'kind', "TEXT DEFAULT 'video'");
+
 // ---------- download queue ----------
 
 export function loadJobs() {
   return db.getAllSync('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200').map((r) => ({
     id: r.id,
+    site: r.site || 'instagram',
     code: r.code,
     url: r.url,
     // Anything that was mid-download when the app closed starts over.
@@ -53,22 +66,24 @@ export function saveJobs(jobs) {
     db.runSync('DELETE FROM jobs');
     for (const j of jobs.slice(0, 200)) {
       db.runSync(
-        'INSERT INTO jobs (id, code, url, status, total, done, username, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [j.id, j.code, j.url, j.status, j.total || 0, j.done || 0, j.username ?? null, j.error ?? null, j.createdAt]
+        'INSERT INTO jobs (id, site, code, url, status, total, done, username, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [j.id, j.site || 'instagram', j.code, j.url, j.status, j.total || 0, j.done || 0, j.username ?? null, j.error ?? null, j.createdAt]
       );
     }
   });
 }
 
-// ---------- saved videos ----------
+// ---------- saved media (photos and videos) ----------
 
 // status: 'saved' | 'blocked' | 'removed'
 export function addVideo(v) {
   const res = db.runSync(
-    `INSERT INTO videos (job_id, saved_at, account, post_url, post_code, video_host, trusted, file_name, asset_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO videos (job_id, site, kind, saved_at, account, post_url, post_code, video_host, trusted, file_name, asset_id, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       v.jobId,
+      v.site || 'instagram',
+      v.kind || 'video',
       Date.now(),
       v.account ?? null,
       v.postUrl,

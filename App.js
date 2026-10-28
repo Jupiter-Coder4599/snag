@@ -24,6 +24,7 @@ import {
   buildExtractScript,
   parseInstagramLink,
 } from './instagram';
+import { extractX, parseXLink } from './x';
 import { UNLOCK_MINUTES, getUnlockedUntil, hasPin, lockNow, setPin, verifyPin } from './pin';
 import { addVideo, deleteVideoRow, listVideos, loadJobs, saveJobs, setVideoStatus } from './db';
 
@@ -42,7 +43,22 @@ const ACTIVE = ['finding', 'saving'];
 
 // Hosts Snag trusts. Anything else is blocked or opened in your browser.
 const LOGIN_HOSTS = ['instagram.com', 'facebook.com'];
-const VIDEO_HOSTS = ['cdninstagram.com', 'fbcdn.net'];
+const MEDIA_HOSTS = {
+  instagram: ['cdninstagram.com', 'fbcdn.net'],
+  x: ['twimg.com'],
+};
+const SITE_LABEL = { instagram: 'Instagram', x: 'X' };
+
+function parseLink(text) {
+  return parseInstagramLink(text) || parseXLink(text);
+}
+
+// File extension for the gallery, taken from the address when possible.
+function extOf(url, kind) {
+  const m = /\.(jpe?g|png|webp|heic|mp4|mov)$/i.exec((url || '').split('?')[0]);
+  if (m) return m[1].toLowerCase().replace('jpeg', 'jpg');
+  return kind === 'video' ? 'mp4' : 'jpg';
+}
 
 function hostOf(url) {
   const m = /^https:\/\/([^/?#:]+)/i.exec(url || '');
@@ -230,13 +246,13 @@ function Snag() {
   // ---------- adding links ----------
   const addLink = useCallback(
     (text) => {
-      const link = parseInstagramLink(text);
+      const link = parseLink(text);
       if (!link) {
-        setNotice("That isn't an Instagram post or reel link, so Snag ignored it.");
+        setNotice("That isn't an Instagram or X post link, so Snag ignored it.");
         return false;
       }
       const dupe = jobs.find(
-        (j) => j.code === link.code && (j.status === 'queued' || ACTIVE.includes(j.status))
+        (j) => j.site === link.site && j.code === link.code && (j.status === 'queued' || ACTIVE.includes(j.status))
       );
       if (dupe) {
         setNotice('That one is already in the queue.');
@@ -246,7 +262,8 @@ function Snag() {
       dispatch({
         type: 'add',
         job: {
-          id: `${Date.now()}-${link.code}`,
+          id: `${Date.now()}-${link.site}-${link.code}`,
+          site: link.site,
           code: link.code,
           url: link.url,
           status: 'queued',
@@ -274,7 +291,7 @@ function Snag() {
   }, [hasShareIntent, shareIntent, resetShareIntent, addLink, pinState.ready]);
 
   // ---------- hidden Instagram page ----------
-  const extract = (code) =>
+  const extractInstagram = (code) =>
     new Promise((resolve, reject) => {
       const reqId = Math.random().toString(36).slice(2);
       const timer = setTimeout(() => {
@@ -330,9 +347,14 @@ function Snag() {
 
   // ---------- the download queue (one at a time) ----------
   useEffect(() => {
-    if (busy.current || !loggedIn || !pageReady || loginOpen || !unlocked) return;
-    const job = [...jobs].reverse().find((j) => j.status === 'queued'); // oldest first
+    if (busy.current || !unlocked) return;
+    const igReady = loggedIn && pageReady && !loginOpen;
+    // Oldest first. Instagram posts wait for the login; X posts don't need one.
+    const job = [...jobs]
+      .reverse()
+      .find((j) => j.status === 'queued' && (j.site === 'x' || igReady));
     if (!job) return;
+    const site = job.site || 'instagram';
 
     const update = (patch) => dispatch({ type: 'update', id: job.id, patch });
     busy.current = true;
@@ -340,48 +362,55 @@ function Snag() {
     (async () => {
       try {
         update({ status: 'finding', error: null });
-        const found = await extract(job.code);
+        const found = site === 'x' ? await extractX(job.code) : await extractInstagram(job.code);
+        const items = found.media;
 
-        // Refuse anything that isn't from Instagram's video servers, and log it.
-        const bad = found.urls.filter((u) => !hostIs(u, VIDEO_HOSTS));
+        // Refuse anything that isn't from the site's own media servers, and log it.
+        const bad = items.filter((m) => !hostIs(m.url, MEDIA_HOSTS[site]));
         if (bad.length) {
-          for (const u of bad) {
+          for (const m of bad) {
             addVideo({
               jobId: job.id,
+              site,
+              kind: m.kind,
               account: found.username,
               postUrl: job.url,
               postCode: job.code,
-              videoHost: hostOf(u) || 'unknown',
+              videoHost: hostOf(m.url) || 'unknown',
               trusted: false,
               status: 'blocked',
             });
           }
           refreshVideos();
-          throw new Error("Blocked: the video came from a server that isn't Instagram's.");
+          throw new Error(`Blocked: a file came from a server that isn't ${SITE_LABEL[site]}'s.`);
         }
 
-        const perm = await MediaLibrary.requestPermissionsAsync(true, ['video']);
+        const perm = await MediaLibrary.requestPermissionsAsync(true, ['video', 'photo']);
         if (!perm.granted) {
-          throw new Error('Allow Snag to save videos, then tap retry.');
+          throw new Error('Allow Snag to save photos and videos, then tap retry.');
         }
 
-        update({ status: 'saving', total: found.urls.length, done: 0, username: found.username });
+        update({ status: 'saving', total: items.length, done: 0, username: found.username });
         const dir = new Directory(Paths.cache, 'snag');
         if (!dir.exists) dir.create();
 
-        for (let i = 0; i < found.urls.length; i++) {
-          const name = found.urls.length > 1 ? `${job.code}_${i + 1}.mp4` : `${job.code}.mp4`;
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const base = `${site}_${job.code}${items.length > 1 ? `_${i + 1}` : ''}`;
+          const name = `${base}.${extOf(item.url, item.kind)}`;
           const target = new File(dir, name);
           if (target.exists) target.delete();
-          const file = await File.downloadFileAsync(found.urls[i], target);
+          const file = await File.downloadFileAsync(item.url, target);
           const asset = await MediaLibrary.createAssetAsync(file.uri);
           file.delete(); // the gallery has its own copy now
           addVideo({
             jobId: job.id,
+            site,
+            kind: item.kind,
             account: found.username,
             postUrl: job.url,
             postCode: job.code,
-            videoHost: hostOf(found.urls[i]),
+            videoHost: hostOf(item.url),
             trusted: true,
             fileName: asset?.filename || name,
             assetId: asset?.id,
@@ -400,6 +429,9 @@ function Snag() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs, loggedIn, pageReady, loginOpen, unlocked, tick]);
+
+  const jobName = (job) =>
+    job.username ? `@${job.username}` : job.site === 'x' ? 'X post' : job.code;
 
   // ---------- actions ----------
   const submit = () => {
@@ -420,7 +452,7 @@ function Snag() {
   const removeFromGallery = async (v) => {
     try {
       if (v.asset_id) {
-        await MediaLibrary.requestPermissionsAsync(false, ['video']);
+        await MediaLibrary.requestPermissionsAsync(false, ['video', 'photo']);
         const ok = await MediaLibrary.deleteAssetsAsync([v.asset_id]);
         if (!ok) return; // you tapped Deny on Android's confirm
       }
@@ -439,17 +471,17 @@ function Snag() {
   };
 
   // ---------- status text ----------
-  const waitingReason = () => {
+  const waitingReason = (job) => {
     if (!pinState.set) return 'Waiting for you to set a PIN';
     if (!unlocked) return 'Waiting for your PIN';
-    if (!loggedIn) return 'Waiting for you to log in to Instagram';
+    if (job.site !== 'x' && !loggedIn) return 'Waiting for you to log in to Instagram';
     return 'Queued';
   };
 
   const jobStatus = (job) => {
     switch (job.status) {
       case 'queued':
-        return waitingReason();
+        return waitingReason(job);
       case 'finding':
         return 'Finding the video…';
       case 'saving':
@@ -468,7 +500,9 @@ function Snag() {
     <View>
       <View style={s.header}>
         <Text style={s.title}>Snag</Text>
-        <Text style={s.sub}>Share a reel from Instagram to Snag and it saves to your gallery.</Text>
+        <Text style={s.sub}>
+          Share a post from Instagram or X to Snag and its photos and videos save to your gallery.
+        </Text>
       </View>
 
       <View style={s.statusBlock}>
@@ -501,7 +535,7 @@ function Snag() {
         <View style={[s.statusRow, s.statusRowLast]}>
           <View style={[s.dot, { backgroundColor: loggedIn ? C.ok : C.bad }]} />
           <Text style={s.statusText}>
-            {loggedIn ? 'Logged in to Instagram' : 'Log in to Instagram so Snag can find videos'}
+            {loggedIn ? 'Logged in to Instagram' : 'Log in to Instagram for Instagram posts (X needs no login)'}
           </Text>
           {!loggedIn && (
             <Pressable style={s.smallBtn} onPress={() => setLoginOpen(true)}>
@@ -516,7 +550,7 @@ function Snag() {
           style={s.input}
           value={input}
           onChangeText={setInput}
-          placeholder="Or paste an Instagram link"
+          placeholder="Or paste an Instagram or X link"
           placeholderTextColor={C.muted}
           autoCapitalize="none"
           autoCorrect={false}
@@ -542,7 +576,7 @@ function Snag() {
               >
                 <View style={{ flex: 1 }}>
                   <Text style={s.jobTitle} numberOfLines={1}>
-                    {job.username ? `@${job.username}` : job.code}
+                    {jobName(job)}
                   </Text>
                   <Text style={[s.jobStatus, job.status === 'failed' && { color: C.bad }]}>
                     {jobStatus(job)}
@@ -566,7 +600,7 @@ function Snag() {
       )}
 
       <View style={s.section}>
-        <Text style={s.sectionTitle}>Saved videos</Text>
+        <Text style={s.sectionTitle}>Saved media</Text>
         <View style={s.tableHead}>
           <Text style={[s.th, s.colAccount]}>Account</Text>
           <Text style={[s.th, s.colSource]}>Source</Text>
@@ -587,7 +621,7 @@ function Snag() {
           contentContainerStyle={{ paddingBottom: 32 }}
           ListEmptyComponent={
             <Text style={s.empty}>
-              Nothing saved yet. In Instagram, tap Share on a reel, then pick Snag.
+              Nothing saved yet. In Instagram or X, tap Share on a post, then pick Snag.
             </Text>
           }
           renderItem={({ item: v }) => {
@@ -595,14 +629,19 @@ function Snag() {
             const removed = v.status === 'removed';
             return (
               <Pressable style={s.tr} onPress={() => setDetail(v)}>
-                <Text style={[s.td, s.colAccount, removed && s.dim]} numberOfLines={1}>
-                  {v.account ? `@${v.account}` : v.post_code}
-                </Text>
+                <View style={[s.colAccount, removed && s.dim]}>
+                  <Text style={s.td} numberOfLines={1}>
+                    {v.account ? `@${v.account}` : v.site === 'x' ? 'X post' : v.post_code}
+                  </Text>
+                  <Text style={s.kind}>{v.kind === 'photo' ? 'photo' : 'video'}</Text>
+                </View>
                 <Text
                   style={[s.td, s.colSource, { color: blocked ? C.bad : C.ok }, removed && s.dim]}
                   numberOfLines={1}
                 >
-                  {blocked ? `Blocked: ${v.video_host}` : removed ? 'Instagram (removed)' : 'Instagram ✓'}
+                  {blocked
+                    ? `Blocked: ${v.video_host}`
+                    : `${SITE_LABEL[v.site] || 'Instagram'} ${removed ? '(removed)' : '✓'}`}
                 </Text>
                 <Text style={[s.td, s.colTime, s.muted]} numberOfLines={1}>
                   {ago(v.saved_at)}
@@ -685,6 +724,10 @@ function Snag() {
             <Text style={s.sheetTitle}>
               {detail.account ? `@${detail.account}` : detail.post_code}
             </Text>
+            <Detail
+              label="From"
+              value={`${SITE_LABEL[detail.site] || 'Instagram'} ${detail.kind === 'photo' ? 'photo' : 'video'}`}
+            />
             <Detail label="Status" value={
               detail.status === 'blocked'
                 ? 'Blocked, not saved'
@@ -694,7 +737,7 @@ function Snag() {
             } />
             <Detail label="Post" value={detail.post_url} />
             <Detail
-              label="Video server"
+              label="File server"
               value={detail.video_host || 'unknown'}
               color={detail.trusted ? C.ok : C.bad}
             />
@@ -813,6 +856,7 @@ const s = StyleSheet.create({
     borderColor: C.line,
   },
   td: { color: C.text, fontSize: 14 },
+  kind: { color: C.muted, fontSize: 11, marginTop: 2 },
   colAccount: { flex: 1.3, paddingRight: 8 },
   colSource: { flex: 1.3, paddingRight: 8 },
   colTime: { flex: 0.8, textAlign: 'right' },

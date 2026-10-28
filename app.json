@@ -25,9 +25,10 @@
         "expo-media-library",
         {
           "granularPermissions": [
-            "video"
+            "video",
+            "photo"
           ],
-          "savePhotosPermission": "Allow Snag to save videos to your gallery."
+          "savePhotosPermission": "Allow Snag to save photos and videos to your gallery."
         }
       ]
     ]
